@@ -211,6 +211,52 @@ A rotação de combate reflete com precisão os 4 slots principais da interface:
 
 ---
 
+### 6. Sistema de Auto-Loot (Coleta de Espólios)
+
+No momento em que o mob é derrotado e sua barra de vida desaparece:
+1. O bot para imediatamente a caminhada com `W`.
+2. Aguarda 120ms para a animação de queda do monstro.
+3. Dispara a tecla de coleta (padrão **`F`**) por 2 pulsos com 100ms de intervalo, garantindo a coleta de todos os itens do chão.
+4. O Auto-Loot pode ser alternado dinamicamente via atalho **`F7`** ou clicando diretamente no slot `LOOT` do HUD.
+
+---
+
+### 7. Telemetria de Farm & Estatísticas em Tempo Real
+
+O HUD Obsidian exibe dados de sessão em tempo real:
+- **Contador de Mobs Derrotados:** Incrementado a cada mob abatido com confirmação visual.
+- **Rendimento (Mobs/Hora):** Cálculo estatístico contínuo da taxa de farm por hora com base no tempo ativo.
+- **Cronômetro de Sessão:** Timer decorrido (`MM:SS` ou `HH:MM:SS`) desde a inicialização do overlay.
+
+---
+
+### 8. Customização Dinâmica via `config.ini`
+
+Não é necessário recompilar o código para ajustar intervalos ou teclas! Na primeira execução, o bot gera automaticamente o arquivo **`config.ini`** na mesma pasta do executável:
+
+```ini
+[Combate]
+SkillE_CooldownMs=2000     ; Cooldown da Skill E (em milissegundos)
+RMB_CooldownMs=1400        ; Cooldown da Skill do Botão Direito (RMB)
+AutoHeal=1                 ; 1 = Auto-Cura ligada por padrão, 0 = desligada
+Heal_CooldownMs=3500       ; Intervalo da Auto-Cura
+AutoLoot=1                 ; 1 = Auto-Loot ligado por padrão, 0 = desligado
+LootPressCount=2           ; Quantidade de toques da tecla de coleta
+ApproachDurationMs=1400    ; Duração da aproximação com 'W' ao travar mob
+
+[Teclas]
+KeyHeal=Q                  ; Tecla da Auto-Cura
+KeySkillE=E                ; Tecla da Skill de Dano
+KeyLoot=F                  ; Tecla de Coleta/Loot
+
+[Overlay]
+WindowGuard=1              ; 1 = Só no Aion 2, 0 = Modo Livre
+PosX=-1                    ; Posição X customizada (-1 = automático)
+PosY=-1                    ; Posição Y customizada (-1 = automático)
+```
+
+---
+
 ## 🎨 Interface In-Game: Obsidian HUD
 
 A interface foi projetada no estilo **Obsidian Glassmorphism**, integrando-se visualmente aos jogos modernos sem atrapalhar a visão periférica:
@@ -222,11 +268,16 @@ A interface foi projetada no estilo **Obsidian Glassmorphism**, integrando-se vi
   * Indicador Ativo / Travado: Verde Esmeralda `#2ED573`
   * Indicador Pausado: Vermelho Carmesim `#FF4757`
   * Indicador Busca / Modo Livre: Âmbar `#FFA502`
-* **Características da Janela:**
-  * Estilos estendidos: `WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW`
-  * Transparência alfa em **93%** via `SetLayeredWindowAttributes`
-  * Movimentação livre: clique e arraste em qualquer espaço vazio do HUD
-  * Slots interativos com clique do mouse para alternar estados
+* **9 Slots Interativos (Largura total: 890px):**
+  1. `[AION 2]` - Logo oficial
+  2. `[COMBATE: ATIVO [F8]]` - Status do bot (clicável para ligar/pausar)
+  3. `[⚔ MOB TRAVADO]` - Indicador de mira e busca em tempo real
+  4. `[⚔ 24 MOBS (68/h)]` - Telemetria de farm e rendimento
+  5. `[⏱ 21:15]` - Cronômetro de tempo de farm da sessão
+  6. `[CURA [Q]: ON]` - Status da cura (clicável para alternar)
+  7. `[LOOT [F]: ON]` - Status do auto-loot (clicável para alternar)
+  8. `[AION2 [OK]]` - Monitor de foco da janela (clicável para modo livre)
+  9. `[✕]` - Botão para encerrar o bot com segurança
 
 ---
 
@@ -235,7 +286,8 @@ A interface foi projetada no estilo **Obsidian Glassmorphism**, integrando-se vi
 | Tecla | Função | Feedback Sonoro |
 | :---: | :--- | :--- |
 | **`F8`** | **Ligar / Pausar Combate** | 1200 Hz (Ativado) / 600 Hz (Pausado) |
-| **`F6` / `F7`** | **Alternar Auto-Cura [Q]** | 900 Hz (Alternado) |
+| **`F6`** | **Alternar Auto-Cura [Q]** | 900 Hz (Alternado) |
+| **`F7`** | **Alternar Auto-Loot [F]** | 1100 Hz (Ativado) / 550 Hz (Pausado) |
 | **`F9`** | **Alternar Proteção de Janela (Aion 2 vs Modo Livre)** | 1000 Hz (Protegido) / 800 Hz (Livre) |
 | **`F12`** | **Fechar o Bot com Segurança** | Encerra thread e fecha o overlay |
 
@@ -246,11 +298,12 @@ A interface foi projetada no estilo **Obsidian Glassmorphism**, integrando-se vi
 ```text
 aion2-bot/
 ├── main.c               # Código-fonte principal em C99 (HUD + Bot + Worker)
+├── config.ini           # Arquivo de configuração de teclas, timers e cooldowns
 ├── build.bat            # Script de compilação em 1 clique (TCC + Manifesto + Ícone)
 ├── inject_manifest.py   # Injetor PE de manifesto de elevação UAC (requireAdministrator)
 ├── tools_inject_icon.py # Injetor de recursos de ícone PE multi-resolução
 ├── aion2.ico            # Recurso de ícone oficial (16x16 até 256x256)
-├── Aion2_Bot.exe        # Binário compilado standalone (~36 KB)
+├── Aion2_Bot.exe        # Binário compilado standalone (~41 KB)
 ├── .gitignore           # Filtro de logs, caches e imagens temporárias
 └── README.md            # Documentação técnica completa
 ```

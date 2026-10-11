@@ -26,6 +26,7 @@ if %ERRORLEVEL% equ 0 (
     echo [4/4] Copiando para o Desktop...
     copy /y "Aion2_Bot.exe" "%OUT_EXE%" >nul 2>&1
     copy /y "Aion2_Bot.exe" "C:\Users\iuryc\Desktop\Aion2_Bot_Atualizado.exe" >nul 2>&1
+    copy /y "config.ini" "C:\Users\iuryc\Desktop\config.ini" >nul 2>&1
     
     echo.
     echo ========================================================

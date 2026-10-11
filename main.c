@@ -66,11 +66,25 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS *pExceptionInfo) {
 #define COLOR_COMBAT_BG   RGB(26, 21, 46)      // #1A152E
 #define COLOR_SEARCH_BG   RGB(38, 32, 19)      // #262013
 
-#define HUD_WIDTH   600
+#define HUD_WIDTH   890
 #define HUD_HEIGHT  42
 
 // ==============================================================================
-// ESTADO GLOBAL
+// CONFIGURAÇÕES CARREGADAS VIA CONFIG.INI
+// ==============================================================================
+static int  g_cd_skill_e = 2000;
+static int  g_cd_rmb = 1400;
+static int  g_cd_heal = 3500;
+static int  g_approachDuration = 1400;
+static int  g_lootPressCount = 2;
+static WORD g_keyHeal = 'Q';
+static WORD g_keySkillE = 'E';
+static WORD g_keyLoot = 'F';
+static int  g_iniPosX = -1;
+static int  g_iniPosY = -1;
+
+// ==============================================================================
+// ESTADO GLOBAL & TELEMETRIA
 // ==============================================================================
 static HWND g_hWnd = NULL;
 static HWND g_hAionWnd = NULL;
@@ -80,9 +94,80 @@ static HFONT g_hFontSmall = NULL;
 static volatile BOOL g_running = TRUE;
 static volatile BOOL g_botActive = FALSE;
 static volatile BOOL g_autoHeal = TRUE;
+static volatile BOOL g_autoLoot = TRUE;
 static volatile BOOL g_windowGuard = TRUE;     // TRUE = só no Aion2, FALSE = Livre
 static volatile BOOL g_targetLocked = FALSE;
 static volatile BOOL g_isForeground = FALSE;
+
+static volatile int  g_mobsKilled = 0;
+static DWORD g_sessionStartTime = 0;
+
+static WCHAR g_iniPath[MAX_PATH] = {0};
+
+static void init_config_path(void) {
+    GetModuleFileNameW(NULL, g_iniPath, MAX_PATH);
+    WCHAR *lastSlash = wcsrchr(g_iniPath, L'\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = L'\0';
+        wcscat(g_iniPath, L"config.ini");
+    } else {
+        wcscpy(g_iniPath, L"config.ini");
+    }
+}
+
+static void load_or_create_config(void) {
+    init_config_path();
+    DWORD attr = GetFileAttributesW(g_iniPath);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        FILE *f = _wfopen(g_iniPath, L"w");
+        if (f) {
+            fwprintf(f,
+                L"[Combate]\n"
+                L"SkillE_CooldownMs=2000\n"
+                L"RMB_CooldownMs=1400\n"
+                L"AutoHeal=1\n"
+                L"Heal_CooldownMs=3500\n"
+                L"AutoLoot=1\n"
+                L"LootKey=F\n"
+                L"LootPressCount=2\n"
+                L"ApproachDurationMs=1400\n\n"
+                L"[Teclas]\n"
+                L"KeyHeal=Q\n"
+                L"KeySkillE=E\n"
+                L"KeyLoot=F\n\n"
+                L"[Overlay]\n"
+                L"WindowGuard=1\n"
+                L"PosX=-1\n"
+                L"PosY=-1\n"
+            );
+            fclose(f);
+            log_debug("config.ini criado com valores padrao");
+        }
+    }
+
+    g_cd_skill_e       = GetPrivateProfileIntW(L"Combate", L"SkillE_CooldownMs", 2000, g_iniPath);
+    g_cd_rmb           = GetPrivateProfileIntW(L"Combate", L"RMB_CooldownMs", 1400, g_iniPath);
+    g_autoHeal         = GetPrivateProfileIntW(L"Combate", L"AutoHeal", 1, g_iniPath);
+    g_cd_heal          = GetPrivateProfileIntW(L"Combate", L"Heal_CooldownMs", 3500, g_iniPath);
+    g_autoLoot         = GetPrivateProfileIntW(L"Combate", L"AutoLoot", 1, g_iniPath);
+    g_lootPressCount   = GetPrivateProfileIntW(L"Combate", L"LootPressCount", 2, g_iniPath);
+    g_approachDuration = GetPrivateProfileIntW(L"Combate", L"ApproachDurationMs", 1400, g_iniPath);
+    g_windowGuard      = GetPrivateProfileIntW(L"Overlay", L"WindowGuard", 1, g_iniPath);
+    g_iniPosX          = GetPrivateProfileIntW(L"Overlay", L"PosX", -1, g_iniPath);
+    g_iniPosY          = GetPrivateProfileIntW(L"Overlay", L"PosY", -1, g_iniPath);
+
+    WCHAR buf[16] = {0};
+    GetPrivateProfileStringW(L"Teclas", L"KeyHeal", L"Q", buf, 16, g_iniPath);
+    if (buf[0]) g_keyHeal = (WORD)buf[0];
+
+    GetPrivateProfileStringW(L"Teclas", L"KeySkillE", L"E", buf, 16, g_iniPath);
+    if (buf[0]) g_keySkillE = (WORD)buf[0];
+
+    GetPrivateProfileStringW(L"Teclas", L"KeyLoot", L"F", buf, 16, g_iniPath);
+    if (buf[0]) g_keyLoot = (WORD)buf[0];
+
+    log_debug("config.ini carregado com sucesso");
+}
 
 // ==============================================================================
 // TOGGLES COM FEEDBACK SONORO
@@ -103,6 +188,18 @@ static void toggle_heal(void) {
     g_autoHeal = !g_autoHeal;
     log_debug("toggle_heal: ALTERNADO");
     Beep(900, 80);
+    if (g_hWnd) InvalidateRect(g_hWnd, NULL, FALSE);
+}
+
+static void toggle_loot(void) {
+    g_autoLoot = !g_autoLoot;
+    if (g_autoLoot) {
+        log_debug("toggle_loot: ATIVADO");
+        Beep(1100, 80);
+    } else {
+        log_debug("toggle_loot: PAUSADO");
+        Beep(550, 100);
+    }
     if (g_hWnd) InvalidateRect(g_hWnd, NULL, FALSE);
 }
 
@@ -396,8 +493,12 @@ static DWORD WINAPI bot_worker_thread(LPVOID lpParam) {
             toggle_bot();
             Sleep(250);
         }
-        if ((GetAsyncKeyState(VK_F6) & 0x8000) || (GetAsyncKeyState(VK_F7) & 0x8000)) {
+        if (GetAsyncKeyState(VK_F6) & 0x8000) {
             toggle_heal();
+            Sleep(250);
+        }
+        if (GetAsyncKeyState(VK_F7) & 0x8000) {
+            toggle_loot();
             Sleep(250);
         }
         if (GetAsyncKeyState(VK_F9) & 0x8000) {
@@ -488,8 +589,21 @@ static DWORD WINAPI bot_worker_thread(LPVOID lpParam) {
                         stop_walk_forward(g_hAionWnd);
                         is_walking = FALSE;
                     }
-                    log_debug("Mob derrotado ou alvo perdido. Retornando para busca.");
-                    Sleep(80);
+                    g_mobsKilled++;
+                    log_debug("Mob derrotado! Telemetria incrementada.");
+
+                    // Auto-Loot se habilitado
+                    if (g_autoLoot) {
+                        log_debug("Auto-Loot: coletando itens do chao");
+                        Sleep(120);
+                        for (int lp = 0; lp < g_lootPressCount; lp++) {
+                            send_game_key(g_hAionWnd, g_keyLoot);
+                            Sleep(100);
+                        }
+                    }
+
+                    log_debug("Retornando para busca de alvos.");
+                    Sleep(60);
                     continue;
                 }
             } else {
@@ -497,9 +611,9 @@ static DWORD WINAPI bot_worker_thread(LPVOID lpParam) {
             }
 
             // 1. APROXIMAÇÃO / DISTÂNCIA:
-            // Nos primeiros 1.4s após travar alvo (para fechar os ~20m até o alcance melee),
+            // Nos primeiros segundos após travar alvo (para fechar os ~20m até o alcance melee),
             // ou pulsos de 'W' a cada 2s para se manter colado no mob.
-            if (now - combat_start < 1400) {
+            if (now - combat_start < (DWORD)g_approachDuration) {
                 if (!is_walking) {
                     start_walk_forward(g_hAionWnd);
                     is_walking = TRUE;
@@ -518,28 +632,28 @@ static DWORD WINAPI bot_worker_thread(LPVOID lpParam) {
                 }
             }
 
-            // 2. AUTO-CURA [Q] (a cada 3.5s se habilitado - Slot 1 do usuário)
-            if (g_autoHeal && (now - last_heal > 3500)) {
-                send_game_key(g_hAionWnd, 'Q');
+            // 2. AUTO-CURA (a cada g_cd_heal ms se habilitado)
+            if (g_autoHeal && (now - last_heal > (DWORD)g_cd_heal)) {
+                send_game_key(g_hAionWnd, g_keyHeal);
                 last_heal = now;
                 Sleep(35);
             }
 
-            // 3. SKILL DE DANO [E] (a cada 2.0s - Slot 2 do usuário)
-            if (now - last_skill_e > 2000) {
-                send_game_key(g_hAionWnd, 'E');
+            // 3. SKILL DE DANO (a cada g_cd_skill_e ms)
+            if (now - last_skill_e > (DWORD)g_cd_skill_e) {
+                send_game_key(g_hAionWnd, g_keySkillE);
                 last_skill_e = now;
                 Sleep(35);
             }
 
-            // 4. SKILL SECUNDÁRIA [RMB] (a cada 1.4s - Slot 4 do usuário)
-            if (now - last_rmb > 1400) {
+            // 4. SKILL SECUNDÁRIA [RMB] (a cada g_cd_rmb ms)
+            if (now - last_rmb > (DWORD)g_cd_rmb) {
                 send_click_right();
                 last_rmb = now;
                 Sleep(35);
             }
 
-            // 5. AUTO-ATAQUE BÁSICO CONTÍNUO [LMB] (Slot 3 do usuário)
+            // 5. AUTO-ATAQUE BÁSICO CONTÍNUO [LMB]
             send_click_left();
             Sleep(80);
         }
@@ -615,31 +729,62 @@ static void on_paint(HWND hWnd) {
 
     // 3. Slot Target: BUSCANDO / TRAVADO
     if (!g_botActive) {
-        draw_pill(memDC, 226, 7, 122, 28, COLOR_SLOT_BG, COLOR_BORDER, L"ALVO: ESPERA", COLOR_TEXT_DIM, g_hFontSmall);
+        draw_pill(memDC, 226, 7, 124, 28, COLOR_SLOT_BG, COLOR_BORDER, L"ALVO: ESPERA", COLOR_TEXT_DIM, g_hFontSmall);
     } else if (g_targetLocked) {
-        draw_pill(memDC, 226, 7, 122, 28, COLOR_COMBAT_BG, COLOR_GREEN, L"⚔ MOB TRAVADO", COLOR_GREEN, g_hFontBold);
+        draw_pill(memDC, 226, 7, 124, 28, COLOR_COMBAT_BG, COLOR_GREEN, L"⚔ MOB TRAVADO", COLOR_GREEN, g_hFontBold);
     } else {
-        draw_pill(memDC, 226, 7, 122, 28, COLOR_SEARCH_BG, COLOR_AMBER, L"↻ BUSCANDO ALVO", COLOR_AMBER, g_hFontSmall);
+        draw_pill(memDC, 226, 7, 124, 28, COLOR_SEARCH_BG, COLOR_AMBER, L"↻ BUSCANDO ALVO", COLOR_AMBER, g_hFontSmall);
     }
 
-    // 4. Slot Cura Q: ON [F6] / OFF [F6]
+    // 4. Telemetria: Contador de Mobs e Mobs/Hora
+    DWORD now = GetTickCount();
+    DWORD elapsedSec = (g_sessionStartTime > 0) ? ((now - g_sessionStartTime) / 1000) : 0;
+    int mobsPerHour = 0;
+    if (elapsedSec > 15) {
+        mobsPerHour = (int)((g_mobsKilled * 3600.0f) / elapsedSec + 0.5f);
+    }
+    WCHAR farmStr[48];
+    wsprintfW(farmStr, L"⚔ %d MOBS (%d/h)", g_mobsKilled, mobsPerHour);
+    draw_pill(memDC, 356, 7, 126, 28, COLOR_SLOT_BG, COLOR_BORDER, farmStr, COLOR_TEXT_WHITE, g_hFontSmall);
+
+    // 5. Timer de Sessão decorrido (HH:MM:SS ou MM:SS)
+    int minutes = (int)(elapsedSec / 60);
+    int seconds = (int)(elapsedSec % 60);
+    int hours   = minutes / 60;
+    minutes = minutes % 60;
+    WCHAR timeStr[32];
+    if (hours > 0) {
+        wsprintfW(timeStr, L"⏱ %02d:%02d:%02d", hours, minutes, seconds);
+    } else {
+        wsprintfW(timeStr, L"⏱ %02d:%02d", minutes, seconds);
+    }
+    draw_pill(memDC, 488, 7, 70, 28, COLOR_SLOT_BG, COLOR_BORDER, timeStr, COLOR_CYAN, g_hFontSmall);
+
+    // 6. Slot Cura Q: ON [F6] / OFF [F6]
     if (g_autoHeal) {
-        draw_pill(memDC, 354, 7, 102, 28, COLOR_SLOT_BG, COLOR_BORDER, L"CURA [Q]: ON [F6]", COLOR_GREEN, g_hFontSmall);
+        draw_pill(memDC, 564, 7, 96, 28, COLOR_SLOT_BG, COLOR_BORDER, L"CURA [Q]: ON", COLOR_GREEN, g_hFontSmall);
     } else {
-        draw_pill(memDC, 354, 7, 102, 28, COLOR_SLOT_BG, COLOR_BORDER, L"CURA [Q]: OFF", COLOR_TEXT_DIM, g_hFontSmall);
+        draw_pill(memDC, 564, 7, 96, 28, COLOR_SLOT_BG, COLOR_BORDER, L"CURA [Q]: OFF", COLOR_TEXT_DIM, g_hFontSmall);
     }
 
-    // 5. Slot Janela: AION2 [OK] / ALT-TAB / LIVRE [F9]
+    // 7. Slot Loot F: ON [F7] / OFF [F7]
+    if (g_autoLoot) {
+        draw_pill(memDC, 666, 7, 96, 28, COLOR_SLOT_BG, COLOR_BORDER, L"LOOT [F]: ON", COLOR_GREEN, g_hFontSmall);
+    } else {
+        draw_pill(memDC, 666, 7, 96, 28, COLOR_SLOT_BG, COLOR_BORDER, L"LOOT [F]: OFF", COLOR_TEXT_DIM, g_hFontSmall);
+    }
+
+    // 8. Slot Janela: AION2 [OK] / ALT-TAB / LIVRE [F9]
     if (!g_windowGuard) {
-        draw_pill(memDC, 462, 7, 98, 28, COLOR_COMBAT_BG, COLOR_AMBER, L"LIVRE [F9]", COLOR_AMBER, g_hFontSmall);
+        draw_pill(memDC, 768, 7, 86, 28, COLOR_COMBAT_BG, COLOR_AMBER, L"LIVRE [F9]", COLOR_AMBER, g_hFontSmall);
     } else if (g_isForeground) {
-        draw_pill(memDC, 462, 7, 98, 28, COLOR_SLOT_BG, COLOR_BORDER, L"AION2 [OK]", COLOR_CYAN, g_hFontSmall);
+        draw_pill(memDC, 768, 7, 86, 28, COLOR_SLOT_BG, COLOR_BORDER, L"AION2 [OK]", COLOR_CYAN, g_hFontSmall);
     } else {
-        draw_pill(memDC, 462, 7, 98, 28, COLOR_SLOT_BG, COLOR_BORDER, L"ALT-TAB", COLOR_ORANGE, g_hFontSmall);
+        draw_pill(memDC, 768, 7, 86, 28, COLOR_SLOT_BG, COLOR_BORDER, L"ALT-TAB", COLOR_ORANGE, g_hFontSmall);
     }
 
-    // 6. Botão Fechar [X]
-    draw_pill(memDC, 566, 7, 24, 28, COLOR_SLOT_BG, COLOR_BORDER, L"✕", COLOR_TEXT_DIM, g_hFontBold);
+    // 9. Botão Fechar [X]
+    draw_pill(memDC, 860, 7, 24, 28, COLOR_SLOT_BG, COLOR_BORDER, L"✕", COLOR_TEXT_DIM, g_hFontBold);
 
     BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
 
@@ -681,7 +826,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             int y = HIWORD(lParam);
 
             // Botão Fechar [X]
-            if (x >= 566 && x <= 592 && y >= 7 && y <= 35) {
+            if (x >= 860 && x <= 884 && y >= 7 && y <= 35) {
                 log_debug("Botao [X] clicado!");
                 PostMessage(hWnd, WM_CLOSE, 0, 0);
                 return 0;
@@ -694,13 +839,19 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
 
             // Clique no slot de Cura (toggle heal)
-            if (x >= 354 && x <= 456 && y >= 7 && y <= 35) {
+            if (x >= 564 && x <= 660 && y >= 7 && y <= 35) {
                 toggle_heal();
                 return 0;
             }
 
+            // Clique no slot de Loot (toggle loot)
+            if (x >= 666 && x <= 762 && y >= 7 && y <= 35) {
+                toggle_loot();
+                return 0;
+            }
+
             // Clique no slot de Janela (toggle guard)
-            if (x >= 462 && x <= 560 && y >= 7 && y <= 35) {
+            if (x >= 768 && x <= 854 && y >= 7 && y <= 35) {
                 toggle_guard();
                 return 0;
             }
@@ -742,6 +893,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     SetUnhandledExceptionFilter(CrashHandler);
     log_debug("WinMain: Iniciado");
 
+    load_or_create_config();
+    g_sessionStartTime = GetTickCount();
+
     g_hFontBold = CreateFontW(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -766,8 +920,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
-    int posX = sw - HUD_WIDTH - 25;
-    int posY = sh - HUD_HEIGHT - 65;
+    int posX = (g_iniPosX >= 0) ? g_iniPosX : (sw - HUD_WIDTH - 25);
+    int posY = (g_iniPosY >= 0) ? g_iniPosY : (sh - HUD_HEIGHT - 65);
 
     HWND hWnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,

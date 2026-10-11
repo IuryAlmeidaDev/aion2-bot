@@ -1,0 +1,20 @@
+# Logs e Depuração
+debug.log
+*.log
+
+# Caches e Ambientes Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Testes e Scripts Temporários
+test_*.py
+check_*.py
+find_*.py
+frames/
+
+# IDE e Sistema
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

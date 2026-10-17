@@ -1,6 +1,7 @@
 import ctypes
 from ctypes import wintypes
 import os
+import sys
 
 kernel32 = ctypes.windll.kernel32
 kernel32.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
@@ -50,7 +51,7 @@ def inject_manifest(exe_path):
         h_update,
         RT_MANIFEST,
         MANIFEST_ID,
-        1033, # English / Neutral
+        1033,
         ctypes.cast(ctypes.c_char_p(MANIFEST_XML), ctypes.c_void_p),
         len(MANIFEST_XML)
     )
@@ -60,8 +61,10 @@ def inject_manifest(exe_path):
         return False
 
     end_res = kernel32.EndUpdateResourceW(h_update, False)
-    print("EndUpdateResourceW:", end_res)
+    print("EndUpdateResourceW:", end_res, "for", abs_exe)
     return bool(end_res)
 
 if __name__ == '__main__':
-    inject_manifest(r"C:\Users\iuryc\Desktop\Aion2_Bot.exe")
+    default_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Aion2_Bot.exe")
+    target = sys.argv[1] if len(sys.argv) > 1 else default_exe
+    inject_manifest(target)

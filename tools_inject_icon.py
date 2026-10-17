@@ -112,4 +112,8 @@ def inject_ico(exe_path, ico_path):
     print(f"Successfully embedded {len(entries)} icon sizes into {exe_path}")
 
 if __name__ == '__main__':
-    inject_ico('GhostHUD.exe', 'ghosthud.ico')
+    import sys
+    exe = sys.argv[1] if len(sys.argv) > 1 else 'Aion2_Bot.exe'
+    ico = sys.argv[2] if len(sys.argv) > 2 else 'aion2.ico'
+    inject_ico(exe, ico)
+

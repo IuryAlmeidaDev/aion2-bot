@@ -1,357 +1,246 @@
-# 🛡️ Aion 2 Combat Bot & Obsidian HUD
+<div align="center">
+
+<img src="aion2.ico" alt="Aion 2 Logo" width="80" height="80" />
+
+# Aion 2 Combat Bot & Obsidian HUD
+
+Autonomous rhythmic combat bot, in-game real-time HUD, and Unreal Engine 5 input controller designed specifically for **Aion 2** (`AION2.exe`).
 
 [![Language](https://img.shields.io/badge/Language-C99%20%2F%20Win32-00F0FF.svg?style=flat-square)](https://en.wikipedia.org/wiki/C99)
 [![Compiler](https://img.shields.io/badge/Compiler-TinyCC%20(TCC)-2ED573.svg?style=flat-square)](https://bellard.org/tcc/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20x64-FFA502.svg?style=flat-square)](https://www.microsoft.com/windows)
-[![Binary Size](https://img.shields.io/badge/Binary-~36%20KB-FF4757.svg?style=flat-square)]()
-[![Theme](https://img.shields.io/badge/UI-Obsidian%20Glassmorphism-7C8A9C.svg?style=flat-square)]()
+[![Engine Target](https://img.shields.io/badge/Target-Unreal%20Engine%205-white.svg?style=flat-square&logo=unrealengine)](https://www.unrealengine.com/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011%20x64-FFA502.svg?style=flat-square)](https://www.microsoft.com/windows)
+[![Binary Size](https://img.shields.io/badge/Binary-~56%20KB-FF4757.svg?style=flat-square)]()
+[![UI](https://img.shields.io/badge/Overlay-Obsidian%20Glassmorphism-7C8A9C.svg?style=flat-square)]()
 
-Bot de combate autônomo, targeting inteligente e HUD in-game de alto desempenho desenvolvido especificamente para **Aion 2** (`AION2.exe`).
-
-O projeto foi construído **100% em C99 nativo com Win32 API pura e GDI Double-Buffering**, sem qualquer dependência de runtimes pesados (Python, Electron, Node.js ou bibliotecas externas). O executável final possui apenas **~36 KB**, consumo de CPU inferior a **0.1%**, resposta em tempo real (<0.5ms por ciclo de visão) e interface gráfica translúcida com estilo **Obsidian Glassmorphism** inspirada no GhostHUD.
-
----
-
-## 📑 Sumário
-
-- [Visão Geral da Arquitetura](#-visão-geral-da-arquitetura)
-- [Engenharia Reversa & Soluções Técnicas](#-engenharia-reversa--soluções-técnicas)
-  - [1. Bypasse de Hook do Anti-Cheat (NCGuard / bb64.dll)](#1-bypasse-de-hook-do-anti-cheat-ncguard--bb64dll)
-  - [2. Otimização de Leitura de Pixels (1400ms para <0.5ms)](#2-otimização-de-leitura-de-pixels-1400ms-para-05ms)
-  - [3. Giro de Câmera no Modo Action Combat](#3-giro-de-câmera-no-modo-action-combat)
-  - [4. Sistema de Aproximação & Controle de Distância](#4-sistema-de-aproximação--controle-de-distância)
-  - [5. Mapeamento de Skills da Barra de Ação](#5-mapeamento-de-skills-da-barra-de-ação)
-- [Interface In-Game: Obsidian HUD](#-interface-in-game-obsidian-hud)
-- [Atalhos Globais (Hotkeys)](#-atalhos-globais-hotkeys)
-- [Estrutura do Repositório](#-estrutura-do-repositório)
-- [Como Compilar do Zero](#-como-compilar-do-zero)
-- [Como Executar](#-como-executar)
-- [Avisos Legais & Disclaimer](#-avisos-legais--disclaimer)
+</div>
 
 ---
 
-## 🏛️ Visão Geral da Arquitetura
+## Overview
 
-O bot opera em modelo multithread desacoplado, garantindo que o processamento de combate e detecção visual nunca trave a fluidez da interface gráfica do usuário:
+Aion 2 Combat Bot is a native Windows utility written in **pure C99 using the Win32 API and GDI double-buffering**. It features zero external runtime dependencies (no Python, Electron, or heavy frameworks), runs at **< 0.1% CPU consumption**, and produces a standalone **~56 KB executable**.
+
+The bot orchestrates a decoupled **4-Phase Autonomous Combat Flow** that aligns with Aion 2's native target-acquisition mechanics (nearest-mob auto-locking on attack keys) while resolving complex driver-level input latching issues in Unreal Engine 5 Action Combat.
+
+> [!NOTE]
+> The overlay renders directly over borderless and windowed game clients using `WS_EX_LAYERED` translucency, providing interactive controls, live session telemetry, and an in-HUD configuration drawer without dropping frame rates.
+
+---
+
+## Key Features
+
+- **4-Phase Autonomous Combat Rotation:** Rhythmic cycling between heavy RMB bursts, cooldown recovery pauses, basic LMB attack chains, and looting intervals.
+- **Unreal Engine 5 Unlatch Technology:** Proprietary `force_stop_aion_action()` mechanism that clears synthetic button latching in UE5 viewport capture during pauses and phase transitions.
+- **Real-Time In-HUD Configuration Drawer:** Interactive expandable drawer (`F10` / `[⚙ CFG]`) for live tuning of phase timers, cooldowns, and hotkeys without restarting.
+- **Single-Instance Enforcement:** Named system mutex and window enumeration to prevent accidental duplicate bot processes.
+- **Obsidian Glassmorphism HUD:** Non-intrusive 9-slot floating overlay with real-time status indicators, farm telemetry (mobs/hr counter), session timer, and click-to-toggle slots.
+- **Hardware ScanCode Pipeline:** Bypasses low-level keyboard/mouse hooks (`WH_KEYBOARD_LL`) via synchronized `PostMessageW` and `KEYEVENTF_SCANCODE` events.
+- **Dynamic Config Persistence:** Automatically saves settings to `config.ini` whenever adjusted in-game or manually edited.
+
+---
+
+## Combat Flow Architecture
+
+The combat worker thread runs decoupled from the Win32 message loop, driving a synchronized 4-phase state machine:
 
 ```mermaid
 flowchart TD
-    subgraph UI_Thread ["Thread Principal (UI Win32)"]
-        A[WinMain] --> B[CreateWindowExW - WS_EX_LAYERED]
-        B --> C[SetLayeredWindowAttributes - Alpha 93%]
-        C --> D[Message Loop: GetMessage / DispatchMessage]
-        D --> E[WndProc: WM_PAINT com Double-Buffering]
-        D --> F[Interação do Mouse: Arrastar / Clicar Slots]
+    subgraph State_Machine ["4-Phase Combat State Machine"]
+        P1["Phase 1: Heavy Skills (RMB)<br/>• 300ms hold / 30ms release pulses<br/>• Triggers nearest-mob targeting<br/>• Duration: 6.0s (customizable)"]
+        P2["Phase 2: Post-RMB Pause<br/>• force_stop_aion_action()<br/>• Clean release of all inputs<br/>• Duration: 2.0s (customizable)"]
+        P3["Phase 3: Attack Chain (LMB)<br/>• 260ms hold / 25ms release pulses<br/>• Continuous damage & re-targeting<br/>• Duration: 4.0s (customizable)"]
+        P4["Phase 4: Interval & Loot<br/>• force_stop_aion_action()<br/>• Auto-loot pulses (Key F)<br/>• Mob counter increment<br/>• Duration: 3.0s (customizable)"]
+
+        P1 -->|Timer elapsed| P2
+        P2 -->|Timer elapsed| P3
+        P3 -->|Timer elapsed| P4
+        P4 -->|Loop back| P1
     end
 
-    subgraph Bot_Thread ["Thread de Trabalho (bot_worker_thread)"]
-        G[Worker Loop] --> H{Bot Ativo? F8}
-        H -- Não --> I[Sleep 30ms & Pausa]
-        H -- Sim --> J{Janela em Foco? AION2}
-        J -- Não --> I
-        J -- Sim --> K{Alvo Travado? is_target_locked}
-        
-        K -- Não (Busca) --> L[Giro de Câmera Suave - MOUSEEVENTF_MOVE]
-        L --> M[Aperta TAB - PostMessage + Scancode]
-        M --> N[Amostragem Ultra-Rápida da Barra de HP]
-        N -- Achou --> O[Beep 1400Hz & Entra em Combate]
-        
-        K -- Sim (Combate) --> P{Alvo Vivo?}
-        P -- Morto --> Q[Retorna para Busca & Para Avanço]
-        P -- Vivo --> R[Aproximação: W Forward Hold]
-        R --> S[Auto-Cura: Tecla Q a cada 3.5s]
-        S --> T[Skill de Dano: Tecla E a cada 2.0s]
-        T --> U[Skill Secundária: RMB Click a cada 1.4s]
-        U --> V[Ataque Básico: LMB Click a cada 80ms]
+    subgraph Unstick_Pipeline ["UE5 Viewport Unstick Mechanism"]
+        U1["SendInput(MOUSEEVENTF_RIGHTUP | MOUSEEVENTF_LEFTUP)"]
+        U2["PostMessageW(WM_RBUTTONUP / WM_CANCELMODE / WM_CAPTURECHANGED)"]
+        U3["25ms VK_MENU (Alt) Toggle"]
+        U4["75ms Micro-Focus Bounce (Overlay ↔ Aion 2)"]
+
+        U1 --> U2 --> U3 --> U4
     end
 
-    UI_Thread -.->|Sincronização Atômica| Bot_Thread
+    P2 -.->|Executes| Unstick_Pipeline
+    P4 -.->|Executes| Unstick_Pipeline
 ```
 
 ---
 
-## 🔬 Engenharia Reversa & Soluções Técnicas
+## Technical Deep-Dive
 
-### 1. Bypasse de Hook do Anti-Cheat (NCGuard / `bb64.dll`)
+### 1. Unreal Engine 5 Viewport Input Latching
 
-#### O Problema:
-O jogo roda sob a Unreal Engine e é protegido pelo anti-cheat proprietário da NCSoft (**NCGuard** / `bb64.dll`). O NCGuard instala um hook global de teclado de baixo nível (`WH_KEYBOARD_LL`).
+#### The Challenge
+In Unreal Engine 5 Action Combat (`bUsingHighPrecisionMouseInput = true`), raw synthetic mouse holds across several seconds can cause the game's internal `PressedMouseButtons` map to desynchronize from the Windows input queue. When synthetic `MOUSEEVENTF_RIGHTUP` is sent, UE5's viewport capture can ignore the release, causing the character to continuously channel abilities or auto-attack even during designated rest intervals or when paused (`F8`).
 
-Toda vez que uma aplicação externa tenta usar `SendInput(INPUT_KEYBOARD)` ou `keybd_event`, o kernel do Windows injeta o evento marcando o sinalizador `LLKHF_INJECTED (0x01)` na estrutura `KBDLLHOOKSTRUCT`. O callback do NCGuard detecta esse sinalizador e **descarta a tecla antes que ela chegue ao jogo**. Por isso, scripts comuns em Python (`pydirectinput`, `pyautogui`, `keyboard`) ou chamadas ingênuas de `SendInput` funcionam no desktop mas são completamente ignoradas dentro do Aion 2.
+#### The Solution
+The bot implements `force_stop_aion_action()` during every rest phase and pause event:
+1. **Clean Hardware Release:** Emits explicit `SendInput` mouse-up events with zero movement deltas.
+2. **Direct Window Messages:** Posts `WM_RBUTTONUP`, `WM_LBUTTONUP`, `WM_CANCELMODE`, and `WM_CAPTURECHANGED` directly to the `UnrealWindow` message queue.
+3. **Cursor Lock Cycle:** Sends a brief 25ms `VK_MENU` (Alt) key event to toggle Action Mode cursor capture.
+4. **Micro-Focus Reset:** Performs a transparent 75ms focus switch to the topmost overlay (`g_hWnd`) and immediately restores focus to `AION2.exe`. This signals `WM_ACTIVATE(WA_INACTIVE)` to UE5, triggering its native internal `FlushPressedKeys()` without flickering or interrupting the player's view.
 
-#### A Solução Arquitetural:
-Implementamos um pipeline híbrido de entrega de comandos (`send_game_key`):
+### 2. Micro-Pulse Target Acquisition
+
+Aion 2 binds target-closest-enemy to primary attack inputs. Holding a mouse button down as a static continuous press prevents the target acquisition trigger from refiring after a mob dies.
+
+The bot employs high-frequency micro-pulsing:
+- **RMB Phase:** 300ms hold down followed by 30ms release.
+- **LMB Phase:** 260ms hold down followed by 25ms release.
+
+This produces smooth skill casting chains while repeatedly asserting target acquisition so the character automatically pivots to the next closest monster.
+
+### 3. Single-Instance Protection
+
+To protect system resources and avoid conflicting input loops, `WinMain` initializes a named kernel mutex:
 
 ```c
-static void send_game_key(HWND hwnd, WORD vk) {
-    UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
-    LPARAM lpDown = 1 | ((scan & 0xFF) << 16);
-    LPARAM lpUp   = 1 | ((scan & 0xFF) << 16) | (1 << 30) | (1 << 31);
-
-    // 1. PostMessage direto para a fila de mensagens da janela
-    // BYPASSA WH_KEYBOARD_LL pois não passa pelo subsistema de interrupção física!
-    if (hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_KEYDOWN, vk, lpDown);
+HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Local\\Aion2_CombatBot_SingleInstance_Mutex");
+if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    HWND hExisting = FindWindowW(L"Aion2_CombatBot_Class", NULL);
+    if (hExisting) {
+        SetForegroundWindow(hExisting);
+        FlashWindow(hExisting, TRUE);
     }
-
-    // 2. SendInput simultâneo com Hardware Scancode (para subsistemas DirectX/RawInput)
-    INPUT inp;
-    ZeroMemory(&inp, sizeof(INPUT));
-    inp.type = INPUT_KEYBOARD;
-    inp.ki.wVk = vk;
-    inp.ki.wScan = (WORD)scan;
-    inp.ki.dwFlags = KEYEVENTF_SCANCODE;
-    SendInput(1, &inp, sizeof(INPUT));
-
-    Sleep(50); // Sustentação necessária para leitura pelo clock da engine
-
-    if (hwnd && IsWindow(hwnd)) {
-        PostMessageW(hwnd, WM_KEYUP, vk, lpUp);
-    }
-    inp.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-    SendInput(1, &inp, sizeof(INPUT));
+    return 0;
 }
 ```
 
-* O `PostMessageW` injeta a mensagem `WM_KEYDOWN`/`WM_KEYUP` com formatação exata de `lParam` diretamente na fila de mensagens da thread da janela principal (`UnrealWindow`), contornando a cadeia de ganchos do `WH_KEYBOARD_LL`.
-* O `SendInput` com flag explícita `KEYEVENTF_SCANCODE` e `MapVirtualKeyW` alimenta os buffers de hardware scan code lidos pela Unreal Engine.
+---
+
+## Obsidian In-Game HUD
+
+The HUD is a floating glassmorphic bar positioned in the bottom-right corner of the screen:
+
+| Slot | Label / Control | Functionality |
+| :---: | :--- | :--- |
+| **1** | `[AION 2]` | Brand badge and drag handle for repositioning |
+| **2** | `[COMBATE: ATIVO / PAUSADO]` | Global bot state (Click or press `F8` to toggle) |
+| **3** | `[FASE X: RMB / LMB / PAUSA]` | Live phase indicator with color-coded status badges |
+| **4** | `[⚔ 0 MOBS (0/h)]` | Real-time kill count and hourly farm efficiency rate |
+| **5** | `[⏱ 00:00]` | Active session timer (`MM:SS` or `HH:MM:SS`) |
+| **6** | `[CURA [Q]: ON / OFF]` | Auto-heal support skill toggle (`F6`) |
+| **7** | `[LOOT [F]: ON / OFF]` | Auto-loot key pulse toggle (`F7`) |
+| **8** | `[⚙ CFG [F10]]` | Expands / collapses the real-time configuration drawer |
+| **9** | `[✕]` | Graceful shutdown with input cleanup |
+
+### In-HUD Configuration Drawer (`F10`)
+Pressing `F10` or clicking `[⚙ CFG]` slides open an integrated options panel directly inside the overlay. You can adjust:
+- **Phase 1 Duration:** RMB combat duration (seconds).
+- **Phase 2 Duration:** Post-RMB pause duration (seconds).
+- **Phase 3 Duration:** LMB combat duration (seconds).
+- **Phase 4 Duration:** Cooldown & loot interval (seconds).
+- **Auto-Heal Interval & Hotkey:** Health maintenance trigger rate.
+
+Changes apply immediately in memory and are written to `config.ini`.
 
 ---
 
-### 2. Otimização de Leitura de Pixels (1400ms para <0.5ms)
+## Global Hotkeys
 
-#### O Problema:
-No Windows 10 e 11, o subsistema gráfico utiliza composição acelerada por GPU (DWM - Desktop Window Manager). Fazer múltiplas chamadas individuais de `GetPixel(hdcScreen, x, y)` diretamente no Device Context da Área de Trabalho (`GetDC(NULL)`) força roundtrips da GPU de volta para a CPU a cada pixel. No loop de busca anterior (25 pontos amostrados), cada ciclo demorava **~1400 milissegundos**, congelando o ritmo do bot.
-
-#### A Solução com `BitBlt` em Memória RAM:
-Ao invés de consultar o monitor 25 vezes, o bot captura uma faixa contínua de 240x5 pixels de uma só vez para um Device Context em memória RAM através de `BitBlt`:
-
-```c
-static BOOL is_target_locked(void) {
-    HDC hdcScreen = GetDC(NULL);
-    if (!hdcScreen) return FALSE;
-
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
-
-    // Barra de HP do alvo: Y ~ 56..60, centralizada em X = 960 (em 1080p)
-    int startY = (int)(screenH * 0.052f + 0.5f);
-    int midX   = screenW / 2;
-    int startX = midX - 120;
-    int width  = 240;
-    int height = 5;
-
-    HDC memDC = CreateCompatibleDC(hdcScreen);
-    HBITMAP hBmp = CreateCompatibleBitmap(hdcScreen, width, height);
-    HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
-
-    // Bloco único transferido para a RAM em < 0.2ms
-    BitBlt(memDC, 0, 0, width, height, hdcScreen, startX, startY, SRCCOPY);
-
-    // Amostragem instantânea em memória local (CPU Cache)
-    int sampleXs[5] = { 20, 60, 100, 140, 180 };
-    int redMatches = 0;
-    for (int i = 0; i < 5; i++) {
-        for (int y = 0; y < height; y++) {
-            COLORREF c = GetPixel(memDC, sampleXs[i], y);
-            int r = GetRValue(c);
-            int g = GetGValue(c);
-            int b = GetBValue(c);
-            // Vermelho carmesim vivo da barra de vida do mob
-            if (r > 150 && g < 40 && b < 60) {
-                redMatches++;
-                break;
-            }
-        }
-    }
-
-    SelectObject(memDC, oldBmp);
-    DeleteObject(hBmp);
-    DeleteDC(memDC);
-    ReleaseDC(NULL, hdcScreen);
-
-    return (redMatches >= 2);
-}
-```
-
-* **Tempo de execução reduzido:** de `1400ms` para **`0.45ms`** (aceleração de ~3000x).
-* **Consumo de recursos:** GDI handles limpos deterministicamente a cada frame para evitar vazamentos de memória.
+| Hotkey | Action | Audio Feedback |
+| :---: | :--- | :--- |
+| **`F8`** | **Start / Pause Combat** | High Beep (1200 Hz) / Low Beep (600 Hz) |
+| **`F6`** | **Toggle Auto-Heal (`Q`)** | Chime (900 Hz) |
+| **`F7`** | **Toggle Auto-Loot (`F`)** | High Beep (1100 Hz) / Low Beep (550 Hz) |
+| **`F9`** | **Window Guard Mode (Aion 2 only vs Any window)** | Alert (1000 Hz / 800 Hz) |
+| **`F10`** | **Toggle Configuration Drawer** | Click tone |
+| **`F12`** | **Exit & Force Release Inputs** | Immediate termination |
 
 ---
 
-### 3. Giro de Câmera no Modo Action Combat
+## Configuration (`config.ini`)
 
-No modo de combate de ação do Aion 2, o retículo é travado no centro da tela. 
-- **O erro clássico:** Segurar o Botão Direito do Mouse (`RMB`) para girar a câmera causava o disparo acidental da habilidade mapeada no RMB, exibindo o aviso em vermelho `"Selecione um alvo."`.
-- **A correção:** O giro de busca é executado enviando apenas deltas relativos através de `MOUSEEVENTF_MOVE`, **sem pressionar nenhum botão do mouse**. O giro ocorre suavemente a 14 pixels por pulso, sem interferir no estado dos botões.
-
----
-
-### 4. Sistema de Aproximação & Controle de Distância
-
-Ao travar um monstro pelo comando `TAB`, ele frequentemente está a 20 ou 25 metros de distância (fora do alcance de golpes corpo a corpo).
-
-O bot implementa uma máquina de estado de movimento:
-1. **Fase de Fechamento Inicial:** Nos primeiros 1.4 segundos após a detecção do alvo, a tecla **`W`** é sustentada continuamente (`start_walk_forward`), fazendo o personagem correr diretamente na direção do monstro.
-2. **Fase de Manutenção Melee:** Durante os golpes, pequenos pulsos de avanço com `W` são emitidos a cada 2 segundos para evitar que o personagem saia do alcance caso o monstro recue.
-3. **Fase de Encerramento:** No momento exato em que a barra de vida desaparece (monstro morto), o avanço é cancelado instantaneamente (`stop_walk_forward`).
-
----
-
-### 5. Mapeamento de Skills da Barra de Ação
-
-A rotação de combate reflete com precisão os 4 slots principais da interface:
-
-| Slot | Ação / Ícone | Tecla / Input | Intervalo | Função |
-| :---: | :--- | :---: | :---: | :--- |
-| **Slot 1** | Asas Verdes (Nv. 2) | **`Q`** | A cada 3.5s | Auto-Cura e suporte (pode ser ativada/desativada via F6) |
-| **Slot 2** | Impacto de Fogo (Nv. 1) | **`E`** | A cada 2.0s | Burst damage primário |
-| **Slot 3** | Raio Azul (Nv. 4) | **`LMB` (Clique Esquerdo)** | A cada 80ms | Ataque básico contínuo |
-| **Slot 4** | Corte Vermelho (Nv. 5) | **`RMB` (Clique Direito)** | A cada 1.4s | Habilidade pesada de dano secundário |
-
----
-
-### 6. Sistema de Auto-Loot (Coleta de Espólios)
-
-No momento em que o mob é derrotado e sua barra de vida desaparece:
-1. O bot para imediatamente a caminhada com `W`.
-2. Aguarda 120ms para a animação de queda do monstro.
-3. Dispara a tecla de coleta (padrão **`F`**) por 2 pulsos com 100ms de intervalo, garantindo a coleta de todos os itens do chão.
-4. O Auto-Loot pode ser alternado dinamicamente via atalho **`F7`** ou clicando diretamente no slot `LOOT` do HUD.
-
----
-
-### 7. Telemetria de Farm & Estatísticas em Tempo Real
-
-O HUD Obsidian exibe dados de sessão em tempo real:
-- **Contador de Mobs Derrotados:** Incrementado a cada mob abatido com confirmação visual.
-- **Rendimento (Mobs/Hora):** Cálculo estatístico contínuo da taxa de farm por hora com base no tempo ativo.
-- **Cronômetro de Sessão:** Timer decorrido (`MM:SS` ou `HH:MM:SS`) desde a inicialização do overlay.
-
----
-
-### 8. Customização Dinâmica via `config.ini`
-
-Não é necessário recompilar o código para ajustar intervalos ou teclas! Na primeira execução, o bot gera automaticamente o arquivo **`config.ini`** na mesma pasta do executável:
+On startup, the bot creates or loads `config.ini` in the application directory:
 
 ```ini
 [Combate]
-SkillE_CooldownMs=2000     ; Cooldown da Skill E (em milissegundos)
-RMB_CooldownMs=1400        ; Cooldown da Skill do Botão Direito (RMB)
-AutoHeal=1                 ; 1 = Auto-Cura ligada por padrão, 0 = desligada
-Heal_CooldownMs=3500       ; Intervalo da Auto-Cura
-AutoLoot=1                 ; 1 = Auto-Loot ligado por padrão, 0 = desligado
-LootPressCount=2           ; Quantidade de toques da tecla de coleta
-ApproachDurationMs=1400    ; Duração da aproximação com 'W' ao travar mob
+RMB_Hold_Seconds=6.0        ; Phase 1: Heavy attack duration
+Wait_After_RMB_Seconds=2.0  ; Phase 2: Rest pause
+LMB_Hold_Seconds=4.0        ; Phase 3: Attack chain duration
+Wait_After_LMB_Seconds=3.0  ; Phase 4: Loot & recovery interval
+AutoHeal=1                  ; 1 = Enabled, 0 = Disabled
+Heal_CooldownMs=3500        ; Heal trigger interval (ms)
+AutoLoot=1                  ; 1 = Enabled, 0 = Disabled
+LootPressCount=2            ; Key presses per loot cycle
 
 [Teclas]
-KeyHeal=Q                  ; Tecla da Auto-Cura
-KeySkillE=E                ; Tecla da Skill de Dano
-KeyLoot=F                  ; Tecla de Coleta/Loot
+KeyHeal=Q                   ; Support / Heal key
+KeyLoot=F                   ; Loot interaction key
 
 [Overlay]
-WindowGuard=1              ; 1 = Só no Aion 2, 0 = Modo Livre
-PosX=-1                    ; Posição X customizada (-1 = automático)
-PosY=-1                    ; Posição Y customizada (-1 = automático)
+WindowGuard=1               ; 1 = Lock execution to AION2.exe, 0 = Free mode
+PosX=-1                     ; Custom X coordinate (-1 = default)
+PosY=-1                     ; Custom Y coordinate (-1 = default)
 ```
 
 ---
 
-## 🎨 Interface In-Game: Obsidian HUD
-
-A interface foi projetada no estilo **Obsidian Glassmorphism**, integrando-se visualmente aos jogos modernos sem atrapalhar a visão periférica:
-
-* **Paleta de Cores:**
-  * Fundo da Barra: `#0F1115` com borda fina em `#2A3240`
-  * Fundo dos Slots: `#161B24`
-  * Logo & Destaques: Ciano `#00F0FF`
-  * Indicador Ativo / Travado: Verde Esmeralda `#2ED573`
-  * Indicador Pausado: Vermelho Carmesim `#FF4757`
-  * Indicador Busca / Modo Livre: Âmbar `#FFA502`
-* **9 Slots Interativos (Largura total: 890px):**
-  1. `[AION 2]` - Logo oficial
-  2. `[COMBATE: ATIVO [F8]]` - Status do bot (clicável para ligar/pausar)
-  3. `[⚔ MOB TRAVADO]` - Indicador de mira e busca em tempo real
-  4. `[⚔ 24 MOBS (68/h)]` - Telemetria de farm e rendimento
-  5. `[⏱ 21:15]` - Cronômetro de tempo de farm da sessão
-  6. `[CURA [Q]: ON]` - Status da cura (clicável para alternar)
-  7. `[LOOT [F]: ON]` - Status do auto-loot (clicável para alternar)
-  8. `[AION2 [OK]]` - Monitor de foco da janela (clicável para modo livre)
-  9. `[✕]` - Botão para encerrar o bot com segurança
-
----
-
-## ⌨️ Atalhos Globais (Hotkeys)
-
-| Tecla | Função | Feedback Sonoro |
-| :---: | :--- | :--- |
-| **`F8`** | **Ligar / Pausar Combate** | 1200 Hz (Ativado) / 600 Hz (Pausado) |
-| **`F6`** | **Alternar Auto-Cura [Q]** | 900 Hz (Alternado) |
-| **`F7`** | **Alternar Auto-Loot [F]** | 1100 Hz (Ativado) / 550 Hz (Pausado) |
-| **`F9`** | **Alternar Proteção de Janela (Aion 2 vs Modo Livre)** | 1000 Hz (Protegido) / 800 Hz (Livre) |
-| **`F12`** | **Fechar o Bot com Segurança** | Encerra thread e fecha o overlay |
-
----
-
-## 📂 Estrutura do Repositório
+## Project Structure
 
 ```text
 aion2-bot/
-├── main.c               # Código-fonte principal em C99 (HUD + Bot + Worker)
-├── config.ini           # Arquivo de configuração de teclas, timers e cooldowns
-├── build.bat            # Script de compilação em 1 clique (TCC + Manifesto + Ícone)
-├── inject_manifest.py   # Injetor PE de manifesto de elevação UAC (requireAdministrator)
-├── tools_inject_icon.py # Injetor de recursos de ícone PE multi-resolução
-├── aion2.ico            # Recurso de ícone oficial (16x16 até 256x256)
-├── Aion2_Bot.exe        # Binário compilado standalone (~41 KB)
-├── .gitignore           # Filtro de logs, caches e imagens temporárias
-└── README.md            # Documentação técnica completa
+├── main.c               # Core Win32 C99 application (HUD, Worker & UE5 unstick logic)
+├── config.ini           # Persistent user settings and timings
+├── build.bat            # 1-Click build script (TCC + Manifest + Multi-res Icon)
+├── inject_manifest.py   # Injects UAC requireAdministrator manifest into PE header
+├── tools_inject_icon.py # Embeds multi-resolution ICO (16x16 up to 256x256)
+├── aion2.ico            # Official high-resolution icon resource
+├── Aion2_Bot.exe        # Standalone compiled binary (~56 KB)
+├── .gitignore           # Git ignore definitions for logs and build artifacts
+└── README.md            # Technical documentation
 ```
 
 ---
 
-## 🔨 Como Compilar do Zero
+## Build Instructions
 
-O projeto utiliza o **Tiny C Compiler (TCC)** pela sua velocidade absurda (compilação em menos de 100 milissegundos) e compatibilidade total com o subsistema Win32 nativo.
+The application is compiled using the **Tiny C Compiler (TCC)** for instant build cycles and minimal binary footprint.
 
-### Pré-requisitos:
-- Windows 10 ou 11 (x64)
-- [Tiny C Compiler (TCC)](https://bellard.org/tcc/) instalado (ou em `C:\Users\iuryc\tcc\tcc\tcc.exe`)
-- Python 3.x (utilizado apenas pelos scripts de injeção de recursos do build)
+### Prerequisites
+- Windows 10 or 11 (x64)
+- [Tiny C Compiler (TCC)](https://bellard.org/tcc/)
+- Python 3.x (used during build to inject PE icon resources and UAC elevation manifest)
 
-### Compilando via `build.bat`:
-Execute o script em lote:
+### Compiling via `build.bat`
+Run the included batch script from Command Prompt or PowerShell:
+
 ```cmd
 build.bat
 ```
 
-Ou execute os passos manualmente no terminal:
+### Manual Compilation
 ```cmd
-:: 1. Compilação do executável com TCC
+:: 1. Compile C source to executable
 tcc main.c -o "Aion2_Bot.exe" -lgdi32 -luser32 -lkernel32 -mwindows
 
-:: 2. Injeção do Manifesto de Administrador UAC
+:: 2. Inject UAC Administrator manifest
 python inject_manifest.py
 
-:: 3. Injeção do Ícone Multi-Resolução
+:: 3. Embed multi-resolution icon resources
 python -c "import tools_inject_icon; tools_inject_icon.inject_ico('Aion2_Bot.exe', 'aion2.ico')"
 ```
 
 ---
 
-## 🚀 Como Executar
+## Quickstart
 
-1. Dê dois cliques no executável **`Aion2_Bot.exe`** (já disponível na sua Área de Trabalho ou na raiz do repositório).
-2. O Windows exibirá o prompt de confirmação de **Administrador (UAC)** devido ao manifesto nativo. Confirme a execução.
-3. A barra translúcida Obsidian surgirá no canto inferior direito da tela.
-4. Abra ou foque na janela do **Aion 2**.
-5. Pressione **`F8`** para ligar o macro.
-6. O bot iniciará a rotação de busca, seleção de alvos com `TAB`, avanço com `W` e rotação de combate com `LMB`, `RMB`, `E` e `Q`. Para pausar a qualquer momento, aperte **`F8`**.
+1. Launch **`Aion2_Bot.exe`** as Administrator.
+2. The Obsidian HUD will dock at the bottom-right corner of your desktop.
+3. Switch to your **Aion 2** game client (Windowed or Borderless Windowed mode).
+4. Press **`F8`** to activate the combat loop.
+5. Press **`F10`** at any point to fine-tune phase durations to match your class skill rotation.
+6. Press **`F8`** again to pause or **`F12`** to exit.
 
----
+> [!IMPORTANT]
+> Always run the bot as Administrator. Windows user interface privilege isolation (UIPI) prevents non-elevated applications from sending synthetic inputs to games running with administrative privileges.
 
-## ⚠️ Avisos Legais & Disclaimer
-
-Este software foi desenvolvido como um projeto de estudo técnico sobre a arquitetura de entrada de mensagens do Windows (`win32k`), tratamento de ganchos de baixo nível (`WH_KEYBOARD_LL`) e renderização em camadas (`layered windows`). 
-
-O uso de automações em jogos online pode violar os Termos de Serviço da desenvolvedora e distribuidora. Utilize sob sua própria responsabilidade e critério.
+> [!TIP]
+> If your class uses skills with longer cooldowns, open the in-HUD drawer (`F10`) and increase **Phase 1** or **Phase 4** duration to synchronize with your skill animation timings.
